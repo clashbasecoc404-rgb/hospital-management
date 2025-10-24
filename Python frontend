@@ -1,0 +1,391 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+import mysql.connector
+from mysql.connector import Error
+
+# --- Database Connection ---
+try:
+    conn = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="tiger",
+        database="hospitalmanagement"
+    )
+    cursor = conn.cursor()
+except Error as e:
+    messagebox.showerror("DB Connection Error", f"Could not connect to database:\n{e}")
+    raise SystemExit
+
+# --- Helper to show results in a new window ---
+def show_results_in_new_window(title, cursor, rows, description):
+    win = tk.Toplevel(root)
+    win.title(title)
+    win.geometry("950x550")
+    tv = ttk.Treeview(win)
+    tv.pack(fill="both", expand=True)
+    if description:
+        cols = [col[0] for col in description]
+        tv["columns"] = cols
+        tv["show"] = "headings"
+        for col in cols:
+            tv.heading(col, text=col)
+            tv.column(col, width=130, anchor="w")
+    for row in rows:
+        tv.insert("", "end", values=row)
+
+# --- Functions ---
+
+# 1. Display Table Data
+def display_table(table_name):
+    try:
+        for i in tree.get_children():
+            tree.delete(i)
+        cursor.execute(f"SELECT * FROM {table_name}")
+        rows = cursor.fetchall()
+        cols = [i[0] for i in cursor.description] if cursor.description else []
+        tree["columns"] = cols
+        tree["show"] = "headings"
+        for col in cols:
+            tree.heading(col, text=col)
+            tree.column(col, width=120, anchor="w")
+        for row in rows:
+            tree.insert("", "end", values=row)
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to load table {table_name}:\n{e}")
+
+# 2. Insert New Patient
+def insert_patient():
+    try:
+        pid = int(entry_patientID.get())
+        name = entry_name.get().strip()
+        dob = entry_dob.get().strip()
+        bg = entry_bloodgroup.get().strip()
+        phone = entry_phone.get().strip()
+        addr = entry_address.get().strip()
+        if not (name and dob):
+            messagebox.showwarning("Missing Data", "Please provide at least Name and DOB.")
+            return
+        cursor.callproc("InsertNewPatient", [pid, name, dob, bg, phone, addr])
+        conn.commit()
+        messagebox.showinfo("Success", "Patient inserted successfully")
+        display_table("Patient")
+    except mysql.connector.IntegrityError as ie:
+        messagebox.showerror("Integrity Error", str(ie))
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+# 2b. Delete Patient
+def delete_patient():
+    try:
+        pid_text = entry_patientID.get().strip()
+        if not pid_text:
+            messagebox.showwarning("Input required", "Enter PatientID to delete.")
+            return
+        pid = int(pid_text)
+        confirm = messagebox.askyesno("Confirm Deletion", f"Are you sure you want to delete PatientID {pid}?")
+        if not confirm:
+            return
+        cursor.execute("DELETE FROM Patient WHERE PatientID=%s", (pid,))
+        conn.commit()
+        messagebox.showinfo("Success", f"PatientID {pid} deleted successfully")
+        display_table("Patient")
+        for entry in [entry_patientID, entry_name, entry_dob, entry_bloodgroup, entry_phone, entry_address]:
+            entry.delete(0, tk.END)
+    except mysql.connector.Error as e:
+        messagebox.showerror("MySQL Error", str(e))
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+# 3. Update Doctor Specialisation
+def update_doctor():
+    try:
+        did = int(entry_doctorID.get())
+        new_spec = entry_specialisation.get().strip()
+        if not new_spec:
+            messagebox.showwarning("Missing Data", "Enter new specialisation.")
+            return
+        cursor.callproc("UpdateDoctorSpecialisation", [did, new_spec])
+        conn.commit()
+        messagebox.showinfo("Success", "Doctor specialisation updated")
+        display_table("Doctor")
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+# 4. Get Patient Medical History
+def get_medical_history():
+    try:
+        pid_text = entry_history_patientID.get().strip()
+        if not pid_text:
+            messagebox.showwarning("Input required", "Enter PatientID.")
+            return
+        pid = int(pid_text)
+        cursor.callproc("GetPatientMedicalHistory", [pid])
+        rows = []
+        desc = None
+        for result in cursor.stored_results():
+            rows = result.fetchall()
+            desc = result.description
+            break
+        show_results_in_new_window(f"Medical History - Patient {pid}", cursor, rows, desc)
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+# 5. Update Medical Record
+def update_medical_record():
+    try:
+        mrid = int(entry_medicalRecordID.get())
+        pid = int(entry_patientID_mr.get())
+        aid = int(entry_appointmentID.get())
+        test = entry_testResults.get().strip()
+        treatment = entry_treatment.get().strip()
+        disease = entry_diagnosedDisease.get().strip()
+        notes = entry_doctorNotes.get().strip()
+        cursor.execute("SELECT CancelledStatus FROM Appointment WHERE AppointmentID=%s", (aid,))
+        status = cursor.fetchone()
+        if status and status[0] == 'Yes':
+            messagebox.showwarning("Cancelled Appointment",
+                                   "Cannot create/update a Medical Record for a cancelled appointment.")
+            return
+        cursor.execute(
+            "UPDATE MedicalRecord "
+            "SET PatientID=%s, AppointmentID=%s, TestResults=%s, Treatment=%s, DiagnosedDisease=%s, DoctorNotes=%s "
+            "WHERE MedicalRecordID=%s",
+            (pid, aid, test, treatment, disease, notes, mrid)
+        )
+        conn.commit()
+        messagebox.showinfo("Success", "Medical Record updated successfully")
+        display_table("MedicalRecord")
+    except mysql.connector.Error as e:
+        messagebox.showerror("MySQL Error", str(e))
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+# 6. Load Medical Record
+def load_medical_record():
+    try:
+        mrid_text = entry_medicalRecordID.get().strip()
+        if not mrid_text:
+            messagebox.showwarning("Input required", "Enter MedicalRecordID to load.")
+            return
+        mrid = int(mrid_text)
+        cursor.execute("SELECT * FROM MedicalRecord WHERE MedicalRecordID=%s", (mrid,))
+        record = cursor.fetchone()
+        if record:
+            entry_patientID_mr.delete(0, tk.END); entry_patientID_mr.insert(0, record[1])
+            entry_appointmentID.delete(0, tk.END); entry_appointmentID.insert(0, record[2])
+            entry_testResults.delete(0, tk.END); entry_testResults.insert(0, record[3] or "")
+            entry_treatment.delete(0, tk.END); entry_treatment.insert(0, record[4] or "")
+            entry_diagnosedDisease.delete(0, tk.END); entry_diagnosedDisease.insert(0, record[5] or "")
+            entry_doctorNotes.delete(0, tk.END); entry_doctorNotes.insert(0, record[6] or "")
+        else:
+            messagebox.showwarning("Not Found", "Medical Record not found")
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+# 7. Update Appointment
+def update_appointment():
+    try:
+        aid = int(entry_appointmentID.get())
+        pid = int(entry_appointment_patientID.get())
+        adate = entry_appointment_date.get().strip()
+        status = entry_cancelled_status.get().strip()
+        if status not in ('Yes', 'No'):
+            messagebox.showwarning("Invalid Status", "CancelledStatus must be 'Yes' or 'No'.")
+            return
+        if status == 'Yes':
+            confirm = messagebox.askyesno("Confirm Cancellation",
+                                          "Cancelling this appointment will automatically delete related medical records. Continue?")
+            if not confirm:
+                return
+        cursor.execute(
+            "UPDATE Appointment SET PatientID=%s, AppointmentDate=%s, CancelledStatus=%s WHERE AppointmentID=%s",
+            (pid, adate, status, aid)
+        )
+        conn.commit()
+        messagebox.showinfo("Success", "Appointment updated successfully")
+        display_table("Appointment")
+    except mysql.connector.Error as e:
+        messagebox.showerror("MySQL Error", str(e))
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+# 8. Load Appointment
+def load_appointment():
+    try:
+        aid_text = entry_appointmentID.get().strip()
+        if not aid_text:
+            messagebox.showwarning("Input required", "Enter AppointmentID to load.")
+            return
+        aid = int(aid_text)
+        cursor.execute("SELECT * FROM Appointment WHERE AppointmentID=%s", (aid,))
+        record = cursor.fetchone()
+        if record:
+            entry_appointment_patientID.delete(0, tk.END); entry_appointment_patientID.insert(0, record[1])
+            entry_appointment_date.delete(0, tk.END); entry_appointment_date.insert(0, record[2])
+            entry_cancelled_status.delete(0, tk.END); entry_cancelled_status.insert(0, record[3])
+        else:
+            messagebox.showwarning("Not Found", "Appointment not found")
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+# --- Analytics functions ---
+
+def show_doctor_patient_count():
+    try:
+        cursor.execute("SELECT * FROM DoctorPatientCount")
+        rows = cursor.fetchall()
+        desc = cursor.description
+        if not rows:
+            raise Exception("DoctorPatientCount table is empty.")
+        show_results_in_new_window("Doctor-wise Patient Count", cursor, rows, desc)
+    except Exception:
+        try:
+            # Auto recreate DoctorPatientCount if missing
+            recreate_sql = """
+            DROP TABLE IF EXISTS DoctorPatientCount;
+            CREATE TABLE DoctorPatientCount AS
+            SELECT 
+                D.DoctorID,
+                D.Name AS DoctorName,
+                D.Gender,
+                D.Specialisation,
+                D.Phone AS DoctorPhone,
+                Dept.Name AS DepartmentName,
+                Dept.ActiveStatus AS DepartmentStatus,
+                COALESCE(COUNT(MR.PatientID), 0) AS TotalPatientsHandled
+            FROM Doctor D
+            LEFT JOIN Department Dept ON D.DepartmentID = Dept.DepartmentID
+            LEFT JOIN MedicalRecord MR ON D.DoctorID = MR.DoctorID
+            GROUP BY 
+                D.DoctorID, D.Name, D.Gender, D.Specialisation, D.Phone,
+                Dept.Name, Dept.ActiveStatus;
+            """
+            for stmt in recreate_sql.strip().split(";"):
+                if stmt.strip():
+                    cursor.execute(stmt)
+            conn.commit()
+            cursor.execute("SELECT * FROM DoctorPatientCount")
+            rows = cursor.fetchall()
+            desc = cursor.description
+            show_results_in_new_window("Doctor-wise Patient Count (Rebuilt)", cursor, rows, desc)
+        except Exception as e2:
+            messagebox.showerror("Error", f"Failed to rebuild DoctorPatientCount:\n{e2}")
+
+def show_appointment_status():
+    try:
+        cursor.execute("SELECT * FROM AppointmentStatusView")
+        rows = cursor.fetchall()
+        desc = cursor.description
+        show_results_in_new_window("Appointment Status Report", cursor, rows, desc)
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to retrieve AppointmentStatusView:\n{e}")
+
+def show_total_revenue():
+    try:
+        args = cursor.callproc("GetTotalRevenue", [0])
+        revenue = args[0]
+        if revenue is None:
+            revenue = 0.00
+        messagebox.showinfo("Total Revenue", f"Total Hospital Revenue = ₹{revenue:,.2f}")
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to retrieve total revenue:\n{e}")
+
+# --- GUI Setup ---
+root = tk.Tk()
+root.title("Hospital Management System")
+root.geometry("1200x700")
+
+tabControl = ttk.Notebook(root)
+tab1 = ttk.Frame(tabControl)
+tab2 = ttk.Frame(tabControl)
+tab3 = ttk.Frame(tabControl)
+tab4 = ttk.Frame(tabControl)
+tab6 = ttk.Frame(tabControl)
+tab7 = ttk.Frame(tabControl)
+tab8 = ttk.Frame(tabControl)
+
+tabControl.add(tab1, text='View Tables')
+tabControl.add(tab2, text='Insert/Delete Patient')
+tabControl.add(tab3, text='Update Doctor')
+tabControl.add(tab4, text='Medical History')
+tabControl.add(tab6, text='Update Medical Record')
+tabControl.add(tab7, text='Update Appointment')
+tabControl.add(tab8, text='Analytics')
+tabControl.pack(expand=1, fill="both")
+
+# --- Tab1: View Tables ---
+tree = ttk.Treeview(tab1)
+tree.pack(fill="both", expand=True)
+btn_frame = tk.Frame(tab1)
+btn_frame.pack(pady=10)
+for table in ["Patient", "Doctor", "Department", "Appointment", "MedicalRecord", "Bills"]:
+    tk.Button(btn_frame, text=table, command=lambda t=table: display_table(t)).pack(side="left", padx=5)
+
+# --- Tab2: Insert/Delete Patient ---
+labels = ["PatientID", "Name", "DOB (YYYY-MM-DD)", "BloodGroup", "Phone", "Address"]
+entries = []
+for i, lbl in enumerate(labels):
+    tk.Label(tab2, text=lbl).grid(row=i, column=0)
+    e = tk.Entry(tab2)
+    e.grid(row=i, column=1)
+    entries.append(e)
+entry_patientID, entry_name, entry_dob, entry_bloodgroup, entry_phone, entry_address = entries
+tk.Button(tab2, text="Insert Patient", command=insert_patient).grid(row=6, column=0, pady=10)
+tk.Button(tab2, text="Delete Patient", command=delete_patient).grid(row=6, column=1, pady=10)
+
+# --- Tab3: Update Doctor ---
+tk.Label(tab3, text="DoctorID").grid(row=0, column=0)
+tk.Label(tab3, text="New Specialisation").grid(row=1, column=0)
+entry_doctorID = tk.Entry(tab3)
+entry_specialisation = tk.Entry(tab3)
+entry_doctorID.grid(row=0, column=1)
+entry_specialisation.grid(row=1, column=1)
+tk.Button(tab3, text="Update Doctor", command=update_doctor).grid(row=2, column=0, columnspan=2, pady=10)
+
+# --- Tab4: Medical History ---
+tk.Label(tab4, text="PatientID").grid(row=0, column=0)
+entry_history_patientID = tk.Entry(tab4)
+entry_history_patientID.grid(row=0, column=1)
+tk.Button(tab4, text="View Medical History", command=get_medical_history).grid(row=1, column=0, columnspan=2, pady=10)
+
+# --- Tab6: Update Medical Record ---
+labels_mr = ["MedicalRecordID", "PatientID", "AppointmentID", "TestResults", "Treatment", "DiagnosedDisease", "DoctorNotes"]
+entries_mr = []
+for i, text in enumerate(labels_mr):
+    tk.Label(tab6, text=text).grid(row=i, column=0, sticky="w", padx=5, pady=2)
+    e = tk.Entry(tab6)
+    e.grid(row=i, column=1, padx=5, pady=2)
+    entries_mr.append(e)
+entry_medicalRecordID, entry_patientID_mr, entry_appointmentID, entry_testResults, entry_treatment, entry_diagnosedDisease, entry_doctorNotes = entries_mr
+tk.Button(tab6, text="Load Medical Record", command=load_medical_record).grid(row=len(labels_mr), column=0, padx=5)
+tk.Button(tab6, text="Update Medical Record", command=update_medical_record).grid(row=len(labels_mr), column=1, padx=5)
+
+# --- Tab7: Update Appointment ---
+labels_appt = ["AppointmentID", "PatientID", "AppointmentDate (YYYY-MM-DD)", "CancelledStatus (Yes/No)"]
+entries_appt = []
+for i, text in enumerate(labels_appt):
+    tk.Label(tab7, text=text).grid(row=i, column=0, sticky="w", padx=5, pady=2)
+    e = tk.Entry(tab7)
+    e.grid(row=i, column=1, padx=5, pady=2)
+    entries_appt.append(e)
+entry_appointmentID, entry_appointment_patientID, entry_appointment_date, entry_cancelled_status = entries_appt
+tk.Button(tab7, text="Load Appointment", command=load_appointment).grid(row=len(labels_appt), column=0, padx=5)
+tk.Button(tab7, text="Update Appointment", command=update_appointment).grid(row=len(labels_appt), column=1, padx=5)
+
+# --- Tab8: Analytics ---
+tk.Button(tab8, text="Doctor-wise Patient Count", width=30, command=show_doctor_patient_count).grid(row=0, column=0, padx=10, pady=10)
+tk.Button(tab8, text="Appointment Status Report", width=30, command=show_appointment_status).grid(row=1, column=0, padx=10, pady=10)
+tk.Button(tab8, text="Total Revenue", width=30, command=show_total_revenue).grid(row=2, column=0, padx=10, pady=10)
+tk.Label(tab8, text="(Uses DB views/procedure: DoctorPatientCount, AppointmentStatusView, GetTotalRevenue)").grid(row=3, column=0, padx=10, pady=6)
+
+# Start with Patient table
+display_table("Patient")
+
+root.mainloop()
+
+# Close DB
+try:
+    cursor.close()
+    conn.close()
+except:
+    pass
